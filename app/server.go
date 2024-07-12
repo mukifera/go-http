@@ -8,6 +8,9 @@ import (
 	"bytes"
 	"strings"
 	"regexp"
+	"flag"
+	"errors"
+	"log"
 )
 
 func handleConnection(conn net.Conn) {
@@ -58,6 +61,31 @@ func handleConnection(conn net.Conn) {
 		}
 
 		fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(user_agent), user_agent)
+	} else if matched, _ := regexp.MatchString(`^/files/\w*$`, request_target); matched {
+		flagSet := flag.NewFlagSet("f1", flag.ContinueOnError)
+		directory_ptr := flagSet.String("directory", "", "The directory where files are stored")
+		if err := flagSet.Parse(os.Args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing directory flag\n");
+			os.Exit(1)
+		}
+
+		directory := *directory_ptr
+
+		r := regexp.MustCompile(`^/files/(\w*)$`)
+
+		file_name := r.FindStringSubmatch(request_target)[1]
+
+		file_path := directory + "/" + file_name // need to sanitize
+
+		contents, err := os.ReadFile(file_path)
+		if errors.Is(err, os.ErrNotExist) {
+			conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
+		} else if err != nil {
+			log.Fatal(err)
+		} else {
+			fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n%s", len(contents), contents)
+		}
+
 	} else {
 		conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
 	}
