@@ -23,7 +23,12 @@ type Request struct {
 	total_bytes_read int
 	buf []byte
 	tmp []byte
+}
 
+type Response struct {
+	status string
+	headers map[string]string
+	body []byte
 }
 
 func parseRequestFromConnection(conn net.Conn) Request {
@@ -99,6 +104,12 @@ func parseRequestBody(request *Request, conn net.Conn) {
 	request.body = request.buf[request.total_bytes_read-content_length :]
 }
 
+func newResponse() Response {
+	var response Response
+	response.headers = make(map[string]string)
+	return response
+}
+
 func handleConnection(conn net.Conn) {
 
 	flagSet := flag.NewFlagSet("f1", flag.ContinueOnError)
@@ -111,24 +122,33 @@ func handleConnection(conn net.Conn) {
 	directory := *directory_ptr
 
 	request := parseRequestFromConnection(conn)
+	response := newResponse()
 
 	if matched, _ := regexp.MatchString(`^/$`, request.target); matched {
-		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
+		response.status = "200 OK"
 	} else if matched, _ := regexp.MatchString(`^/echo(/\w*)*$`, request.target); matched {
 
 		r := regexp.MustCompile(`^/echo(?:/(\w*))*$`)
 
 		message := r.FindStringSubmatch(request.target)[1]
 
-		fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(message), message)
+		response.status = "200 OK"
+		response.headers["Content-Type"] = "text/plain"
+		response.headers["Content-Length"] = strconv.Itoa(len(message))
+		response.body = []byte(message)
+
 	} else if matched, _ := regexp.MatchString(`^/user-agent$`, request.target); matched {
 		user_agent, ok := request.headers["User-Agent"]
 		if !ok {
 			fmt.Fprintf(os.Stderr, "No User-Agent header was provided\n");
-			fmt.Fprintf(conn, "HTTP/1.1 400 Bad Request\r\n\r\n")
+			
+			response.status = "400 Bad Request"
+		} else {
+			response.status = "200 OK"
+			response.headers["Content-Type"] = "text/plain"
+			response.headers["Content-Length"] = strconv.Itoa(len(user_agent))
+			response.body = []byte(user_agent)
 		}
-
-		fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(user_agent), user_agent)
 	} else if matched, _ := regexp.MatchString(`^/files/\w*$`, request.target); matched && request.method == "GET" {
 		r := regexp.MustCompile(`^/files/(\w*)$`)
 
@@ -138,11 +158,14 @@ func handleConnection(conn net.Conn) {
 
 		contents, err := os.ReadFile(file_path)
 		if errors.Is(err, os.ErrNotExist) {
-			conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
+			response.status = "404 Not Found"
 		} else if err != nil {
 			log.Fatal(err)
 		} else {
-			fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n%s", len(contents), contents)
+			response.status = "200 OK"
+			response.headers["Content-Type"] = "application/octet-stream"
+			response.headers["Content-Length"] = strconv.Itoa(len(contents))
+			response.body = contents
 		}
 	} else if matched, _ := regexp.MatchString(`^/files/\w*$`, request.target); matched && request.method == "POST" {
 		r := regexp.MustCompile(`^/files/(\w*)$`)
@@ -156,12 +179,18 @@ func handleConnection(conn net.Conn) {
 		if err := os.WriteFile(file_path, request.body, 0644); err != nil {
 			log.Fatal(err)
 		}
-
-		conn.Write([]byte("HTTP/1.1 201 Created\r\n\r\n"))
+		response.status = "201 Created"
 
 	} else {
-		conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
+		response.status = "404 Not Found"
 	}
+
+	fmt.Fprintf(conn, "HTTP/1.1 %s\r\n", response.status)
+	for key, value := range response.headers {
+		fmt.Fprintf(conn, "%s: %s\r\n", key, value)
+	}
+	fmt.Fprintf(conn, "\r\n%s", response.body)
+
 	conn.Close()
 }
 
