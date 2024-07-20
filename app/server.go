@@ -123,7 +123,7 @@ func compressResponse(response *Response, encodings_string string) {
 		return
 	}
 
-	response.headers["Accept-Encoding"] = strings.Join(response_encodings, ", ")
+	response.headers["Content-Encoding"] = strings.Join(response_encodings, ", ")
 }
 
 func handleConnection(conn net.Conn) {
