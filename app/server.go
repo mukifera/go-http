@@ -110,6 +110,12 @@ func newResponse() Response {
 	return response
 }
 
+func compressResponse(response *Response, encoding string) {
+	if encoding == "gzip" {
+		response.headers["Content-Encoding"] = "gzip"
+	}
+}
+
 func handleConnection(conn net.Conn) {
 
 	flagSet := flag.NewFlagSet("f1", flag.ContinueOnError)
@@ -183,6 +189,10 @@ func handleConnection(conn net.Conn) {
 
 	} else {
 		response.status = "404 Not Found"
+	}
+
+	if encoding, ok := request.headers["Accept-Encoding"]; ok && request.method == "GET" {
+		compressResponse(&response, encoding)
 	}
 
 	fmt.Fprintf(conn, "HTTP/1.1 %s\r\n", response.status)
