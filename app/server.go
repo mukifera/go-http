@@ -14,6 +14,91 @@ import (
 	"strconv"
 )
 
+type Request struct {
+	method string
+	target string
+	headers map[string]string
+	body []byte
+
+	total_bytes_read int
+	buf []byte
+	tmp []byte
+
+}
+
+func parseRequestFromConnection(conn net.Conn) Request {
+	var request Request
+
+	request.total_bytes_read = 0
+	request.buf = make([]byte, 0, 4096)
+	request.headers = make(map[string]string)
+	tmp := make([]byte, 256)
+
+	var request_line string
+
+	for {
+		n, err := conn.Read(tmp)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			fmt.Println("Read error:", err)
+			os.Exit(1)
+		}
+		request.buf = append(request.buf, tmp[:n]...)
+		request.total_bytes_read += n
+
+		dcrlf_index := bytes.Index(request.buf, []byte("\r\n\r\n"))
+		if dcrlf_index != -1 {
+			request_line = strings.Split(string(request.buf[:dcrlf_index]), "\r\n")[0]
+			header_strings := strings.Split(string(request.buf[:dcrlf_index]), "\r\n")[1:]
+			for _, header_string := range header_strings {
+				split := strings.Split(header_string, ": ")
+				name := split[0]
+				value := split[1]
+	
+				request.headers[name] = value
+			}
+
+			break
+		}
+	}
+
+	request.method = strings.Split(request_line, " ")[0]
+	request.target = strings.Split(request_line, " ")[1]
+
+	return request
+}
+
+func parseRequestBody(request *Request, conn net.Conn) {
+	content_length_string, ok := request.headers["Content-Length"]
+	if !ok {
+		log.Fatal("No Content-Length header was provided")
+	}
+	content_length, err := strconv.Atoi(content_length_string)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	dcrlf_index := bytes.Index(request.buf, []byte("\r\n\r\n"))
+
+	tmp := make([]byte, 256)
+	for ; request.total_bytes_read - dcrlf_index - 4 < content_length;{
+		n, err := conn.Read(tmp)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			fmt.Println("Read error:", err)
+			os.Exit(1)
+		}
+		request.buf = append(request.buf, tmp[:n]...)
+		request.total_bytes_read += n
+	}
+
+	request.body = request.buf[request.total_bytes_read-content_length :]
+}
+
 func handleConnection(conn net.Conn) {
 
 	flagSet := flag.NewFlagSet("f1", flag.ContinueOnError)
@@ -25,61 +110,29 @@ func handleConnection(conn net.Conn) {
 
 	directory := *directory_ptr
 
-	buf := make([]byte, 0, 4096)
-	tmp := make([]byte, 256)
-	total_bytes := 0
+	request := parseRequestFromConnection(conn)
 
-	for {
-		n, err := conn.Read(tmp)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			fmt.Println("Read error:", err)
-			os.Exit(1)
-		}
-		buf = append(buf, tmp[:n]...)
-		total_bytes += n
-		dcrlf_index := bytes.Index(buf, []byte("\r\n\r\n"))
-		if dcrlf_index != -1 {
-			// buf = buf[:dcrlf_index]
-			break
-		}
-	}
-
-	request_line := strings.Split(string(buf), "\r\n")[0]
-	headers := strings.Split(string(buf), "\r\n")[1:]
-
-	method := strings.Split(request_line, " ")[0]
-	request_target := strings.Split(request_line, " ")[1]
-
-	if matched, _ := regexp.MatchString(`^/$`, request_target); matched {
+	if matched, _ := regexp.MatchString(`^/$`, request.target); matched {
 		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
-	} else if matched, _ := regexp.MatchString(`^/echo(/\w*)*$`, request_target); matched {
+	} else if matched, _ := regexp.MatchString(`^/echo(/\w*)*$`, request.target); matched {
 
 		r := regexp.MustCompile(`^/echo(?:/(\w*))*$`)
 
-		message := r.FindStringSubmatch(request_target)[1]
+		message := r.FindStringSubmatch(request.target)[1]
 
 		fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(message), message)
-	} else if matched, _ := regexp.MatchString(`^/user-agent$`, request_target); matched {
-		user_agent := ""
-		for _, header := range headers {
-			split := strings.Split(header, ": ")
-			name := split[0]
-			value := split[1]
-
-			if name == "User-Agent" {
-				user_agent = value
-				break
-			}
+	} else if matched, _ := regexp.MatchString(`^/user-agent$`, request.target); matched {
+		user_agent, ok := request.headers["User-Agent"]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "No User-Agent header was provided\n");
+			fmt.Fprintf(conn, "HTTP/1.1 400 Bad Request\r\n\r\n")
 		}
 
 		fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(user_agent), user_agent)
-	} else if matched, _ := regexp.MatchString(`^/files/\w*$`, request_target); matched && method == "GET" {
+	} else if matched, _ := regexp.MatchString(`^/files/\w*$`, request.target); matched && request.method == "GET" {
 		r := regexp.MustCompile(`^/files/(\w*)$`)
 
-		file_name := r.FindStringSubmatch(request_target)[1]
+		file_name := r.FindStringSubmatch(request.target)[1]
 
 		file_path := directory + "/" + file_name // need to sanitize
 
@@ -91,45 +144,16 @@ func handleConnection(conn net.Conn) {
 		} else {
 			fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n%s", len(contents), contents)
 		}
-	} else if matched, _ := regexp.MatchString(`^/files/\w*$`, request_target); matched && method == "POST" {
+	} else if matched, _ := regexp.MatchString(`^/files/\w*$`, request.target); matched && request.method == "POST" {
 		r := regexp.MustCompile(`^/files/(\w*)$`)
 
-		file_name := r.FindStringSubmatch(request_target)[1]
+		file_name := r.FindStringSubmatch(request.target)[1]
 
 		file_path := directory + "/" + file_name // need to sanitize
 
-		content_length := 0
-		for _, header := range headers {
-			split := strings.Split(header, ": ")
-			name := split[0]
-			value := split[1]
+		parseRequestBody(&request, conn)
 
-			if name == "Content-Length" {
-				value, err := strconv.Atoi(value)
-				if err != nil {
-					log.Fatal(err)
-				}
-				content_length = value
-				break
-			}
-		}
-
-		dcrlf_index := bytes.Index(buf, []byte("\r\n\r\n"))
-
-		for ; total_bytes - dcrlf_index < content_length;{
-			n, err := conn.Read(tmp)
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				fmt.Println("Read error:", err)
-				os.Exit(1)
-			}
-			buf = append(buf, tmp[:n]...)
-			total_bytes += n
-		}
-
-		if err := os.WriteFile(file_path, buf[total_bytes-content_length :], 0644); err != nil {
+		if err := os.WriteFile(file_path, request.body, 0644); err != nil {
 			log.Fatal(err)
 		}
 
