@@ -110,10 +110,20 @@ func newResponse() Response {
 	return response
 }
 
-func compressResponse(response *Response, encoding string) {
-	if encoding == "gzip" {
-		response.headers["Content-Encoding"] = "gzip"
+func compressResponse(response *Response, encodings_string string) {
+	encodings := strings.Split(encodings_string, ", ")
+	var response_encodings []string
+	for _, encoding := range encodings {
+		if encoding == "gzip" {
+			response_encodings = append(response_encodings, "gzip")
+		}
 	}
+
+	if len(response_encodings) == 0 {
+		return
+	}
+
+	response.headers["Accept-Encoding"] = strings.Join(response_encodings, ", ")
 }
 
 func handleConnection(conn net.Conn) {
@@ -191,8 +201,8 @@ func handleConnection(conn net.Conn) {
 		response.status = "404 Not Found"
 	}
 
-	if encoding, ok := request.headers["Accept-Encoding"]; ok && request.method == "GET" {
-		compressResponse(&response, encoding)
+	if encodings, ok := request.headers["Accept-Encoding"]; ok && request.method == "GET" {
+		compressResponse(&response, encodings)
 	}
 
 	fmt.Fprintf(conn, "HTTP/1.1 %s\r\n", response.status)
