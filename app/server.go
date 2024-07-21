@@ -119,7 +119,6 @@ func compressGzip(message []byte) []byte {
 		log.Fatal(err)
 	}
 	writer.Close()
-	fmt.Println(string(buffer.Bytes()))
 	return buffer.Bytes()
 }
 
