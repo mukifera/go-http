@@ -12,6 +12,7 @@ import (
 	"errors"
 	"log"
 	"strconv"
+	"compress/gzip"
 )
 
 type Request struct {
@@ -110,12 +111,26 @@ func newResponse() Response {
 	return response
 }
 
+func compressGzip(message []byte) []byte {
+	var buffer bytes.Buffer
+	writer := gzip.NewWriter(&buffer)
+	_, err := writer.Write(message)
+	if err != nil {
+		log.Fatal(err)
+	}
+	writer.Close()
+	fmt.Println(string(buffer.Bytes()))
+	return buffer.Bytes()
+}
+
 func compressResponse(response *Response, encodings_string string) {
 	encodings := strings.Split(encodings_string, ", ")
 	var response_encodings []string
 	for _, encoding := range encodings {
 		if encoding == "gzip" {
 			response_encodings = append(response_encodings, "gzip")
+			response.body = compressGzip(response.body)
+			response.headers["Content-Length"] = strconv.Itoa(len(response.body))
 		}
 	}
 
